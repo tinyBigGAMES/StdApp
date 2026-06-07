@@ -89,3 +89,7 @@ checkpoint.zip
 checkpoint_base.zip
 distro.yml
 /distro
+/imports
+bin/res.vpk
+!libs/raylib/bin/raylib.dll
+libs/raylib/raylib.json

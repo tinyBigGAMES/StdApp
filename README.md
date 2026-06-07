@@ -73,7 +73,8 @@ uses
 
 1. Clone the repository
 2. Open the project group in Delphi 12 or higher
-3. Build the project group (Win64 target)
+3. Build and run **ImportLibs** first -- it generates the raylib import units and resources into `imports/`
+4. Build **Testbed** -- it depends on the import units generated in step 3
 
 ## Project Structure
 
@@ -98,6 +99,12 @@ repo/
     StdApp.VirtualMemory.pas      Sparse-file-backed memory mapping
     StdApp.VMM.pas                Zero-dependency memory manager
     StdApp.ZipVFS.pas             ZIP-from-resource file system
+  projects/
+    ImportLibs/                   Generates raylib import units (run first)
+    testbed/                      Interactive test and demo runner
+  imports/                        Generated import units (output of ImportLibs)
+  libs/
+    raylib/                       Raylib headers and DLL
   docs/
     StdApp.md                     Detailed unit documentation
   media/                          Logo and images
