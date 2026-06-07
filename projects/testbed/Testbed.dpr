@@ -14,6 +14,7 @@ program Testbed;
 {$R *.res}
 
 uses
+  StdApp.VMM,
   System.SysUtils,
   UTestbed in 'UTestbed.pas',
   StdApp.Base in '..\..\src\StdApp.Base.pas',
