@@ -1,12 +1,5 @@
 ![StdApp](../media/logo.png)
 
-# StdApp Components(TM)
-
-**Version:** 1.0
-**Copyright:** (c) 2026-present tinyBigGAMES(TM) LLC
-**License:** See LICENSE
-
----
 
 ## 1. Overview
 
