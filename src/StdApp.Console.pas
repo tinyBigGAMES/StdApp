@@ -36,6 +36,10 @@ uses
   System.SysUtils;
 
 const
+  LF = #10;
+  CR = #13;
+  LFCR = #10#13;
+
   COLOR_RESET  = #27'[0m';
   COLOR_BOLD   = #27'[1m';
   COLOR_RED    = #27'[31m';
@@ -63,6 +67,7 @@ const
   BG_MAGENTA = #27'[45m';
   BG_CYAN    = #27'[46m';
   BG_WHITE   = #27'[47m';
+  BG_DARK_GREY = #27'[48;5;238m';
 
 type
 
@@ -87,10 +92,10 @@ type
     class procedure ClearScreen(); static;
     class procedure Print(); overload; static;
     class procedure PrintLn(); overload; static;
-    class procedure Print(const AText: string); overload; static;
-    class procedure Print(const AText: string; const AArgs: array of const); overload; static;
-    class procedure PrintLn(const AText: string); overload; static;
-    class procedure PrintLn(const AText: string; const AArgs: array of const); overload; static;
+    class procedure Print(const AText: string; const AResetColor: Boolean = True); overload; static;
+    class procedure Print(const AText: string; const AArgs: array of const; const AResetColor: Boolean = True); overload; static;
+    class procedure PrintLn(const AText: string; const AResetColor: Boolean = True); overload; static;
+    class procedure PrintLn(const AText: string; const AArgs: array of const; const AResetColor: Boolean = True); overload; static;
     class procedure MsgBox(const ATitle, AMessage: string; const AType: TMsgBoxType = TMsgBoxType.mbtInfo); static;
     class function  RGB(const AR, AG, AB: Byte): string; static;
     class function  BgRGB(const AR, AG, AB: Byte): string; static;
@@ -113,7 +118,7 @@ type
     class procedure RestoreCursor(); static;
 
     // Line operations
-    class procedure ClearLine(); static;
+    class procedure ClearLine(const AResetCursor: Boolean = False); static;
     class procedure InsertLines(const ACount: Integer = 1); static;
     class procedure DeleteLines(const ACount: Integer = 1); static;
     class procedure ScrollUp(const ACount: Integer = 1); static;
@@ -167,28 +172,42 @@ begin
   PrintLn('');
 end;
 
-class procedure TConsole.Print(const AText: string);
+class procedure TConsole.Print(const AText: string; const AResetColor: Boolean);
 begin
   if not HasConsole() then Exit;
-  Write(AText + COLOR_RESET);
+  if AResetColor then
+    Write(AText + COLOR_RESET)
+  else
+    Write(AText);
 end;
 
-class procedure TConsole.Print(const AText: string; const AArgs: array of const);
+class procedure TConsole.Print(const AText: string; const AArgs: array of const;
+  const AResetColor: Boolean);
 begin
   if not HasConsole() then Exit;
-  Write(Format(AText, AArgs) + COLOR_RESET);
+  if AResetColor then
+    Write(Format(AText, AArgs) + COLOR_RESET)
+  else
+    Write(Format(AText, AArgs));
 end;
 
-class procedure TConsole.PrintLn(const AText: string);
+class procedure TConsole.PrintLn(const AText: string; const AResetColor: Boolean);
 begin
   if not HasConsole() then Exit;
-  WriteLn(AText + COLOR_RESET);
+  if AResetColor then
+    WriteLn(AText + COLOR_RESET)
+  else
+    WriteLn(AText);
 end;
 
-class procedure TConsole.PrintLn(const AText: string; const AArgs: array of const);
+class procedure TConsole.PrintLn(const AText: string; const AArgs: array of const;
+  const AResetColor: Boolean);
 begin
   if not HasConsole() then Exit;
-  WriteLn(Format(AText, AArgs) + COLOR_RESET);
+  if AResetColor then
+    WriteLn(Format(AText, AArgs) + COLOR_RESET)
+  else
+    WriteLn(Format(AText, AArgs));
 end;
 
 class procedure TConsole.MsgBox(const ATitle, AMessage: string;
@@ -304,10 +323,12 @@ end;
 
 // Line operations
 
-class procedure TConsole.ClearLine();
+class procedure TConsole.ClearLine(const AResetCursor: Boolean);
 begin
   if not HasConsole() then Exit;
   Write(#27'[2K');
+  if AResetCursor then
+    Write(#13);
 end;
 
 class procedure TConsole.InsertLines(const ACount: Integer);

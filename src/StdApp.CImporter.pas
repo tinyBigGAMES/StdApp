@@ -317,6 +317,7 @@ type
 
     procedure ParseTopLevel();
     procedure ParseTypedef();
+    procedure ParseFuncPtrTypedef(const AReturnType: string; const AReturnPtrDepth: Integer);
     procedure ParseStruct(const AIsUnion: Boolean; out AInfo: TCStructInfo);
     procedure ParseEnum(out AInfo: TCEnumInfo);
     procedure ParseFunction(const AReturnType: string; const AReturnPtrDepth: Integer; const AFuncName: string);
@@ -331,6 +332,7 @@ type
     function SanitizeIdentifier(const AName: string): string;
     function IsAllowedSourceFile(): Boolean;
     function HasStructDefinition(const AName: string): Boolean;
+    function HasTypeNameCollision(const AName: string): Boolean;
     function TypedefReferencesExcludedType(const ATypedef: TCTypedefInfo): Boolean;
     function FunctionReferencesExcludedType(const AFunc: TCFunctionInfo): Boolean;
     function GetDelphiFuncName(const AFuncName: string): string;
@@ -1608,6 +1610,7 @@ var
   LIsUnion: Boolean;
   LTagName: string;
   LStructInfo: TCStructInfo;
+  LEnumInfo: TCEnumInfo;
 begin
   while not IsAtEnd() do
   begin
@@ -1655,7 +1658,67 @@ begin
         Match(ctkSemicolon);
       end
       else
-        SkipToSemicolon();
+      begin
+        // Could be: function returning struct, variable decl, or forward decl
+        LPtrDepth := ParsePointerDepth();
+        if Check(ctkIdentifier) then
+        begin
+          LName := FCurrentToken.Lexeme;
+          Advance();
+          if Check(ctkLParen) then
+            // Function with struct return type: struct Name * func_name(...)
+            ParseFunction(LTagName, LPtrDepth, LName)
+          else
+            SkipToSemicolon();
+        end
+        else
+        begin
+          // Forward declaration: struct Name; -- register as opaque type
+          if (LTagName <> '') and IsAllowedSourceFile() and
+             not FForwardDecls.Contains(LTagName) and
+             not HasStructDefinition(LTagName) then
+            FForwardDecls.Add(LTagName);
+          SkipToSemicolon();
+        end;
+      end;
+    end
+    else if Check(ctkEnum) then
+    begin
+      // Handle standalone enum definitions: enum Name { ... };
+      Advance();
+
+      LTagName := '';
+      if Check(ctkIdentifier) then
+      begin
+        LTagName := FCurrentToken.Lexeme;
+        Advance();
+      end;
+
+      if Check(ctkLBrace) then
+      begin
+        ParseEnum(LEnumInfo);
+        if LTagName <> '' then
+          LEnumInfo.EnumName := LTagName;
+        if (LEnumInfo.EnumName <> '') and IsAllowedSourceFile() then
+          FEnums.Add(LEnumInfo);
+        Match(ctkSemicolon);
+      end
+      else
+      begin
+        // Could be: function returning enum: enum Name [*] func_name(...)
+        LPtrDepth := ParsePointerDepth();
+        if Check(ctkIdentifier) then
+        begin
+          LName := FCurrentToken.Lexeme;
+          Advance();
+          if Check(ctkLParen) then
+            ParseFunction(LTagName, LPtrDepth, LName)
+          else
+            SkipToSemicolon();
+        end
+        else
+          SkipToSemicolon();
+      end;
     end
     else if IsTypeKeyword() or Check(ctkIdentifier) then
     begin
@@ -1682,6 +1745,123 @@ begin
   end;
 end;
 
+{ ParseFuncPtrTypedef }
+procedure TCImporter.ParseFuncPtrTypedef(const AReturnType: string; const AReturnPtrDepth: Integer);
+var
+  LInfo: TCTypedefInfo;
+  LParam: TCParamInfo;
+begin
+  // Expects current token is '('
+  // Pattern: (*Name)(params)
+  Advance();
+
+  if not Check(ctkStar) then
+  begin
+    SkipToSemicolon();
+    Exit;
+  end;
+
+  Advance();
+
+  if not Check(ctkIdentifier) then
+  begin
+    SkipToSemicolon();
+    Exit;
+  end;
+
+  LInfo.AliasName := FCurrentToken.Lexeme;
+  LInfo.IsFunctionPointer := True;
+  LInfo.TargetType := AReturnType;
+  LInfo.IsPointer := AReturnPtrDepth > 0;
+  LInfo.PointerDepth := AReturnPtrDepth;
+  Advance();
+
+  if Check(ctkRParen) then
+    Advance();
+
+  // Parse function pointer parameters into FuncInfo
+  LInfo.FuncInfo.FuncName := LInfo.AliasName;
+  LInfo.FuncInfo.ReturnType := AReturnType;
+  LInfo.FuncInfo.ReturnIsPointer := AReturnPtrDepth > 0;
+  LInfo.FuncInfo.ReturnPointerDepth := AReturnPtrDepth;
+  LInfo.FuncInfo.IsVariadic := False;
+  SetLength(LInfo.FuncInfo.Params, 0);
+
+  if Check(ctkLParen) then
+  begin
+    Advance();
+
+    while not IsAtEnd() and not Check(ctkRParen) do
+    begin
+      // Check for void parameter list
+      if Check(ctkVoid) and (PeekNext().Kind = ctkRParen) then
+      begin
+        Advance();
+        Break;
+      end;
+
+      // Check for variadic
+      if Check(ctkEllipsis) then
+      begin
+        LInfo.FuncInfo.IsVariadic := True;
+        Advance();
+        Break;
+      end;
+
+      LParam.IsConst := False;
+      LParam.IsConstTarget := False;
+      if Check(ctkConst) then
+      begin
+        LParam.IsConst := True;
+        Advance();
+      end;
+
+      LParam.TypeName := ParseBaseType();
+      LParam.PointerDepth := ParsePointerDepth();
+      LParam.IsPointer := LParam.PointerDepth > 0;
+
+      // If const was before type and we have a pointer, it's pointer to const
+      if LParam.IsConst and LParam.IsPointer then
+        LParam.IsConstTarget := True;
+
+      if Check(ctkConst) then
+      begin
+        LParam.IsConst := True;
+        Advance();
+      end;
+
+      if Check(ctkIdentifier) then
+      begin
+        LParam.ParamName := FCurrentToken.Lexeme;
+        Advance();
+      end
+      else
+        LParam.ParamName := '';
+
+      // Handle array parameters as pointers
+      if Check(ctkLBracket) then
+      begin
+        LParam.IsPointer := True;
+        Inc(LParam.PointerDepth);
+        while not IsAtEnd() and not Check(ctkRBracket) do
+          Advance();
+        Match(ctkRBracket);
+      end;
+
+      SetLength(LInfo.FuncInfo.Params, Length(LInfo.FuncInfo.Params) + 1);
+      LInfo.FuncInfo.Params[High(LInfo.FuncInfo.Params)] := LParam;
+
+      if not Match(ctkComma) then
+        Break;
+    end;
+
+    Match(ctkRParen);
+  end;
+
+  if IsAllowedSourceFile() then
+    FTypedefs.Add(LInfo);
+end;
+
 procedure TCImporter.ParseTypedef();
 var
   LInfo: TCTypedefInfo;
@@ -1692,7 +1872,6 @@ var
   LIsUnion: Boolean;
   LTagName: string;
   LAliasName: string;
-  LParam: TCParamInfo;
 begin
   Advance();
 
@@ -1754,6 +1933,12 @@ begin
           if IsAllowedSourceFile() then
             FTypedefs.Add(LInfo);
         end;
+      end
+      else if Check(ctkLParen) then
+      begin
+        // Function pointer returning struct: typedef struct Tag (*Name)(params)
+        if LTagName <> '' then
+          ParseFuncPtrTypedef(LTagName, 0);
       end;
     end;
   end
@@ -1792,112 +1977,7 @@ begin
     LPtrDepth := ParsePointerDepth();
 
     if Check(ctkLParen) then
-    begin
-      Advance();
-      if Check(ctkStar) then
-      begin
-        Advance();
-        if Check(ctkIdentifier) then
-        begin
-          LInfo.AliasName := FCurrentToken.Lexeme;
-          LInfo.IsFunctionPointer := True;
-          LInfo.TargetType := LBaseType;
-          LInfo.IsPointer := LPtrDepth > 0;
-          LInfo.PointerDepth := LPtrDepth;
-          Advance();
-
-          if Check(ctkRParen) then
-            Advance();
-
-          // Parse function pointer parameters into FuncInfo
-          LInfo.FuncInfo.FuncName := LInfo.AliasName;
-          LInfo.FuncInfo.ReturnType := LBaseType;
-          LInfo.FuncInfo.ReturnIsPointer := LPtrDepth > 0;
-          LInfo.FuncInfo.ReturnPointerDepth := LPtrDepth;
-          LInfo.FuncInfo.IsVariadic := False;
-          SetLength(LInfo.FuncInfo.Params, 0);
-
-          if Check(ctkLParen) then
-          begin
-            Advance();
-
-            while not IsAtEnd() and not Check(ctkRParen) do
-            begin
-              // Check for void parameter list
-              if Check(ctkVoid) and (PeekNext().Kind = ctkRParen) then
-              begin
-                Advance();
-                Break;
-              end;
-
-              // Check for variadic
-              if Check(ctkEllipsis) then
-              begin
-                LInfo.FuncInfo.IsVariadic := True;
-                Advance();
-                Break;
-              end;
-
-              LParam.IsConst := False;
-              LParam.IsConstTarget := False;
-              if Check(ctkConst) then
-              begin
-                LParam.IsConst := True;
-                Advance();
-              end;
-
-              LParam.TypeName := ParseBaseType();
-              LParam.PointerDepth := ParsePointerDepth();
-              LParam.IsPointer := LParam.PointerDepth > 0;
-
-              // If const was before type and we have a pointer, it's pointer to const
-              if LParam.IsConst and LParam.IsPointer then
-                LParam.IsConstTarget := True;
-
-              if Check(ctkConst) then
-              begin
-                LParam.IsConst := True;
-                Advance();
-              end;
-
-              if Check(ctkIdentifier) then
-              begin
-                LParam.ParamName := FCurrentToken.Lexeme;
-                Advance();
-              end
-              else
-                LParam.ParamName := '';
-
-              // Handle array parameters as pointers
-              if Check(ctkLBracket) then
-              begin
-                LParam.IsPointer := True;
-                Inc(LParam.PointerDepth);
-                while not IsAtEnd() and not Check(ctkRBracket) do
-                  Advance();
-                Match(ctkRBracket);
-              end;
-
-              SetLength(LInfo.FuncInfo.Params, Length(LInfo.FuncInfo.Params) + 1);
-              LInfo.FuncInfo.Params[High(LInfo.FuncInfo.Params)] := LParam;
-
-              if not Match(ctkComma) then
-                Break;
-            end;
-
-            Match(ctkRParen);
-          end;
-
-          if IsAllowedSourceFile() then
-            FTypedefs.Add(LInfo);
-        end;
-      end
-      else
-      begin
-        SkipToSemicolon();
-        Exit;
-      end;
-    end
+      ParseFuncPtrTypedef(LBaseType, LPtrDepth)
     else if Check(ctkIdentifier) then
     begin
       LInfo.AliasName := FCurrentToken.Lexeme;
@@ -2277,6 +2357,11 @@ begin
       if LExisting.FuncName = LFunc.FuncName then
         Exit;
     end;
+    // Skip if function name collides with a type name (C allows this,
+    // Delphi does not) -- unless a rename is configured to resolve it
+    if HasTypeNameCollision(LFunc.FuncName) and
+       not FFunctionRenames.ContainsKey(LFunc.FuncName) then
+      Exit;
     LFunc.SourceFile := FCurrentSourceFile;
     FFunctions.Add(LFunc);
   end;
@@ -2524,6 +2609,31 @@ begin
     if FStructs[LI].StructName = AName then
       Exit(True);
   end;
+  Result := False;
+end;
+
+function TCImporter.HasTypeNameCollision(const AName: string): Boolean;
+var
+  LI: Integer;
+begin
+  // A function name that matches any emitted type identifier (struct,
+  // typedef alias, or enum name) is legal in C but a duplicate
+  // identifier in Delphi.
+  if HasStructDefinition(AName) then
+    Exit(True);
+
+  for LI := 0 to FTypedefs.Count - 1 do
+  begin
+    if FTypedefs[LI].AliasName = AName then
+      Exit(True);
+  end;
+
+  for LI := 0 to FEnums.Count - 1 do
+  begin
+    if FEnums[LI].EnumName = AName then
+      Exit(True);
+  end;
+
   Result := False;
 end;
 
@@ -3121,6 +3231,12 @@ begin
       begin
         if LTypedefEmitted[LI] then
           Continue;
+        // Skip duplicate typedefs (same alias already emitted from another header)
+        if LKnown.ContainsKey(FTypedefs[LI].AliasName) then
+        begin
+          LTypedefEmitted[LI] := True;
+          Continue;
+        end;
         if TypedefReferencesExcludedType(FTypedefs[LI]) then
         begin
           LTypedefEmitted[LI] := True;
@@ -4856,6 +4972,8 @@ begin
   Status(COLOR_CYAN + 'Writing output...' + COLOR_RESET, []);
   try
     TUtils.CreateDirInPath(LOutputFile);
+    if TFile.Exists(LOutputFile) then
+      TFile.Delete(LOutputFile);
     TFile.WriteAllText(LOutputFile, FOutput.ToString(), TEncoding.UTF8);
   except
     on E: Exception do

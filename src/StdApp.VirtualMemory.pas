@@ -22,7 +22,8 @@
   - TVirtualMemoryView<T>: Generic typed view with indexed access,
     stream-style Read/Write, and position tracking
   - TVirtualMemoryStream: TStream adapter over a mapped region
-  - TVirtualMemoryMode: Allocate, ReadOnly, ReadWrite, CopyOnWrite
+  - TVirtualMemoryMode: Allocate, ReadOnly, ReadWrite, CopyOnWrite,
+    AllocateExecute (anonymous read-write-execute region for JIT code)
 
   Dependencies: StdApp.Base, StdApp.Utils
 ===============================================================================}
@@ -45,6 +46,11 @@ uses
   StdApp.Resources;
 
 const
+  // Win32 view-access flag missing from Winapi.Windows
+  // (SECTION_MAP_EXECUTE_EXPLICIT -- execute access on a mapped view)
+  { FILE_MAP_EXECUTE }
+  FILE_MAP_EXECUTE = $0020;
+
   // Error codes for OS-level failures (programmer errors use exceptions).
   VM_ERR_ALLOC_SIZE_ZERO     = 'VM001';
   VM_ERR_ALLOC_MAPPING       = 'VM002';
@@ -73,7 +79,8 @@ type
     Allocate,    // Anonymous page-file-backed, read-write
     ReadOnly,    // File-backed, read-only (PAGE_READONLY)
     ReadWrite,   // File-backed, read-write (PAGE_READWRITE), changes persist
-    CopyOnWrite  // File-backed, private writes (PAGE_WRITECOPY), file untouched
+    CopyOnWrite,     // File-backed, private writes (PAGE_WRITECOPY), file untouched
+    AllocateExecute  // Anonymous page-file-backed, read-write-execute (JIT code)
   );
 
   { TVirtualMemoryStream }
@@ -202,7 +209,8 @@ type
     constructor Create(); override;
     destructor Destroy(); override;
     function Allocate(const ASize: UInt64;
-      const AMappingName: string = ''): Boolean;
+      const AMappingName: string = '';
+      const AExecutable: Boolean = False): Boolean;
 
     function OpenShared(const AMappingName: string;
       const ASize: UInt64;
@@ -230,6 +238,11 @@ type
     class function LoadFromFile(const AFilename: string): TVirtualMemory<T>;
 
     function FlushToDisk(): Boolean;
+
+    // Flush the CPU instruction cache after writing code into an
+    // AllocateExecute region -- required before executing newly written code
+    procedure FlushInstructionCacheRegion(const AOffset: UInt64 = 0;
+      const ASize: UInt64 = 0);
 
     procedure ZeroMemory();
     procedure CopyFrom(const ASource: Pointer; const ASizeBytes: UInt64);
@@ -639,12 +652,31 @@ begin
 end;
 
 function TVirtualMemory<T>.Allocate(const ASize: UInt64;
-  const AMappingName: string = ''): Boolean;
+  const AMappingName: string = '';
+  const AExecutable: Boolean = False): Boolean;
 var
   LBytesReturned: DWORD;
   LTotalBytes: UInt64;
+  LFileAccess: DWORD;
+  LPageProtect: DWORD;
+  LMapAccess: DWORD;
 begin
   Result := False;
+
+  // Executable regions need EXECUTE rights on the backing file handle,
+  // the section protection, and the mapped view
+  if AExecutable then
+  begin
+    LFileAccess := GENERIC_READ or GENERIC_WRITE or GENERIC_EXECUTE;
+    LPageProtect := PAGE_EXECUTE_READWRITE;
+    LMapAccess := FILE_MAP_ALL_ACCESS or FILE_MAP_EXECUTE;
+  end
+  else
+  begin
+    LFileAccess := GENERIC_READ or GENERIC_WRITE;
+    LPageProtect := PAGE_READWRITE;
+    LMapAccess := FILE_MAP_ALL_ACCESS;
+  end;
 
   if ASize = 0 then
   begin
@@ -668,7 +700,7 @@ begin
     // Create sparse temp file as backing store (no commit charge)
     FTempFilePath := TPath.Combine(TPath.GetTempPath(), FMappingName + '.vmtmp');
     FFileHandle := CreateFile(PChar(FTempFilePath),
-      GENERIC_READ or GENERIC_WRITE, 0, nil, CREATE_ALWAYS,
+      LFileAccess, 0, nil, CREATE_ALWAYS,
       FILE_ATTRIBUTE_NORMAL or FILE_FLAG_DELETE_ON_CLOSE, 0);
     if FFileHandle = INVALID_HANDLE_VALUE then
     begin
@@ -687,7 +719,7 @@ begin
 
     // Create mapping from the sparse file
     FMappingHandle := CreateFileMapping(FFileHandle, nil,
-      PAGE_READWRITE, 0, 0, PChar(FMappingName));
+      LPageProtect, 0, 0, PChar(FMappingName));
     if FMappingHandle = 0 then
     begin
       FErrors.Add(esError, VM_ERR_ALLOC_MAPPING,
@@ -706,7 +738,7 @@ begin
       Exit;
     end;
 
-    FMemory := MapViewOfFile(FMappingHandle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    FMemory := MapViewOfFile(FMappingHandle, LMapAccess, 0, 0, 0);
     if FMemory = nil then
     begin
       FErrors.Add(esError, VM_ERR_ALLOC_MAPVIEW,
@@ -727,10 +759,34 @@ begin
 
   FSize := LTotalBytes;
   FPosition := 0;
-  FMode := TVirtualMemoryMode.Allocate;
+  if AExecutable then
+    FMode := TVirtualMemoryMode.AllocateExecute
+  else
+    FMode := TVirtualMemoryMode.Allocate;
   FFilename := '';
   FIsSharedConsumer := False;
   Result := True;
+end;
+
+procedure TVirtualMemory<T>.FlushInstructionCacheRegion(const AOffset: UInt64 = 0;
+  const ASize: UInt64 = 0);
+var
+  LSize: UInt64;
+begin
+  // Only meaningful on a live executable region
+  if (FMode <> TVirtualMemoryMode.AllocateExecute) or (FMemory = nil) then
+    Exit;
+
+  if AOffset >= FSize then
+    Exit;
+
+  // Zero size means flush from offset to end of region; clamp to bounds
+  LSize := ASize;
+  if (LSize = 0) or (AOffset + LSize > FSize) then
+    LSize := FSize - AOffset;
+
+  WinApi.Windows.FlushInstructionCache(GetCurrentProcess(),
+    Pointer(UIntPtr(FMemory) + UIntPtr(AOffset)), LSize);
 end;
 
 function TVirtualMemory<T>.OpenShared(const AMappingName: string;
@@ -813,9 +869,10 @@ var
 begin
   Result := False;
 
-  if AMode = TVirtualMemoryMode.Allocate then
+  if (AMode = TVirtualMemoryMode.Allocate) or
+     (AMode = TVirtualMemoryMode.AllocateExecute) then
   begin
-    // vmAllocate is not valid for Open; use Allocate() instead.
+    // Allocate/AllocateExecute are not valid for Open; use Allocate() instead.
     FErrors.Add(esError, VM_ERR_OPEN_FAILED,
       RSVMUseAllocate, [], nil);
     Exit;
