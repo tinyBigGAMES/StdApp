@@ -202,6 +202,11 @@ type
       var APos: Integer): Boolean;
     // Shared LaTeX linearizer
     function DoApplyLatexSubs(const AText: string): string;
+    // String-level inline-math rewriter for non-streaming render paths
+    // (headings). Mirrors DoParseMath's span rules exactly; spans are
+    // replaced with their linearized glyphs, everything else passes
+    // through untouched.
+    function DoRewriteInlineMath(const AText: string): string;
     function DoLatexParse(const AText: string; var APos: Integer;
       const AStopChar: Char): string;
     function DoClassifyHtmlBlock(const ALine: string;
@@ -644,6 +649,17 @@ begin
     Exit;
   end;
 
+  // An open multi-line display-math collection consumes every char --
+  // line detection is suspended until the block closes or the runaway
+  // cap in DoStreamChar fires. Only display math (state >= 2) can be
+  // open here: inline state always resolves within its own line.
+  if FMathState > 0 then
+  begin
+    FLineMode := LINE_MODE_STREAM;
+    DoStreamChar(ACh);
+    Exit;
+  end;
+
   // Normal flow: check first character for block markers
   if CharInSet(ACh, ['#', '`', '-', '*', '_', '>', '|', ' ', '<']) or
      ((ACh >= '0') and (ACh <= '9')) then
@@ -1004,48 +1020,65 @@ begin
       else
       begin
         // End of streamed paragraph line
-        if FPendingChar <> #0 then
+
+        // Display math spans lines: an open $$ collection survives the
+        // newline (folded to a space) and resumes on the next line. The
+        // line-end bookkeeping below must not run -- every char of this
+        // line was consumed into the buffer, nothing was emitted. The
+        // 512-char cap in DoStreamChar guards unclosed blocks and
+        // Flush() reconstructs raw as the final backstop.
+        if FMathState >= 2 then
         begin
-          if FPendingChar = '*' then
-            DoToggleStyle(isItalic)
-          else if FPendingChar = '~' then
-            DoEmit('~');
-          FPendingChar := #0;
-        end;
-        DoFlushWordBuffer();
-        if FStyles <> [] then
+          if FMathState = 3 then
+          begin
+            // The consumed lone '$' was content, not a closer
+            FMathBuffer := FMathBuffer + '$';
+            FMathState := 2;
+          end;
+          if (FMathBuffer <> '') and (not FMathBuffer.EndsWith(' ')) then
+            FMathBuffer := FMathBuffer + ' ';
+        end
+        else
         begin
-          DoEmitRaw(COLOR_RESET);
-          FStyles := [];
-        end;
-        FInCodeSpan := False;
-        if FLinkState > 0 then
-        begin
-          DoEmit('[' + FLinkText);
-          FLinkText := '';
-          FLinkUrl := '';
-          FLinkState := 0;
-        end;
-        if FHtmlState > 0 then
-        begin
-          DoEmit('<' + FHtmlBuffer);
-          FHtmlBuffer := '';
-          FHtmlState := 0;
-        end;
-        if FMathState > 0 then
-        begin
-          // Reconstruct exactly what was consumed -- text loss is forbidden
+          if FPendingChar <> #0 then
+          begin
+            if FPendingChar = '*' then
+              DoToggleStyle(isItalic)
+            else if FPendingChar = '~' then
+              DoEmit('~');
+            FPendingChar := #0;
+          end;
+          DoFlushWordBuffer();
+          if FStyles <> [] then
+          begin
+            DoEmitRaw(COLOR_RESET);
+            FStyles := [];
+          end;
+          FInCodeSpan := False;
+          if FLinkState > 0 then
+          begin
+            DoEmit('[' + FLinkText);
+            FLinkText := '';
+            FLinkUrl := '';
+            FLinkState := 0;
+          end;
+          if FHtmlState > 0 then
+          begin
+            DoEmit('<' + FHtmlBuffer);
+            FHtmlBuffer := '';
+            FHtmlState := 0;
+          end;
           if FMathState = 1 then
-            DoEmit('$' + FMathBuffer)
-          else if FMathState = 2 then
-            DoEmit('$$' + FMathBuffer)
-          else // 3: '$$' + content + one '$' already consumed
-            DoEmit('$$' + FMathBuffer + '$');
-          FMathBuffer := '';
-          FMathState := 0;
+          begin
+            // Inline $... never spans lines -- reconstruct raw,
+            // text loss is forbidden
+            DoEmit('$' + FMathBuffer);
+            FMathBuffer := '';
+            FMathState := 0;
+          end;
+          DoFlushWordBuffer();
+          DoNewLine();
         end;
-        DoFlushWordBuffer();
-        DoNewLine();
       end;
     end;
 
@@ -1447,16 +1480,23 @@ end;
 procedure TConsoleAdapter.DoHandleHeading(const AText: string;
   const ALevel: Integer);
 var
+  LText: string;
   LUpper: string;
   LBarWidth: Integer;
   LBar: string;
 begin
   DoEndCurrentBlock();
+
+  // Inline $...$ math is linearized before rendering so heading glyphs
+  // match body text AND the box/underline widths measure the rendered
+  // string, not the raw LaTeX source
+  LText := DoRewriteInlineMath(AText);
+
   case ALevel of
     1:
     begin
       // H1: Double-border box, CYAN BOLD, uppercase
-      LUpper := AText.ToUpper();
+      LUpper := LText.ToUpper();
       LBarWidth := LUpper.Length + 4;
       if LBarWidth > FLineWidth then
         LBarWidth := FLineWidth;
@@ -1476,9 +1516,9 @@ begin
       // H2: Single underline, YELLOW BOLD
       DoNewLine();
       DoEmitRaw(COLOR_YELLOW + COLOR_BOLD);
-      DoEmitRaw(AText);
+      DoEmitRaw(LText);
       DoNewLine();
-      DoEmitRaw(StringOfChar(BOX_S_H, AText.Length));
+      DoEmitRaw(StringOfChar(BOX_S_H, LText.Length));
       DoEmitRaw(COLOR_RESET);
       DoNewLine();
     end;
@@ -1487,7 +1527,7 @@ begin
       // H3: GREEN BOLD
       DoNewLine();
       DoEmitRaw(COLOR_GREEN + COLOR_BOLD);
-      DoEmitRaw(AText);
+      DoEmitRaw(LText);
       DoEmitRaw(COLOR_RESET);
       DoNewLine();
     end;
@@ -1496,7 +1536,7 @@ begin
       // H4: MAGENTA BOLD
       DoNewLine();
       DoEmitRaw(COLOR_MAGENTA + COLOR_BOLD);
-      DoEmitRaw(AText);
+      DoEmitRaw(LText);
       DoEmitRaw(COLOR_RESET);
       DoNewLine();
     end;
@@ -1505,7 +1545,7 @@ begin
       // H5: CYAN UNDERLINE
       DoNewLine();
       DoEmitRaw(COLOR_CYAN + STYLE_UNDERLINE);
-      DoEmitRaw(AText);
+      DoEmitRaw(LText);
       DoEmitRaw(COLOR_RESET);
       DoNewLine();
     end;
@@ -1514,7 +1554,7 @@ begin
       // H6: DIM
       DoNewLine();
       DoEmitRaw(STYLE_DIM);
-      DoEmitRaw(AText);
+      DoEmitRaw(LText);
       DoEmitRaw(COLOR_RESET);
       DoNewLine();
     end;
@@ -2555,6 +2595,100 @@ var
 begin
   LPos := 1;
   Result := DoLatexParse(AText, LPos, #0);
+end;
+
+function TConsoleAdapter.DoRewriteInlineMath(const AText: string): string;
+var
+  LOut: TStringBuilder;
+  LPos: Integer;
+  LStart: Integer;
+  LEnd: Integer;
+  LIdx: Integer;
+  LCap: Integer;
+  LDisplay: Boolean;
+begin
+  // Fast path -- nothing to do without a delimiter
+  if not AText.Contains('$') then
+    Exit(AText);
+
+  LOut := TStringBuilder.Create();
+  try
+    LPos := 1;
+    while LPos <= AText.Length do
+    begin
+      if AText[LPos] = '$' then
+      begin
+        // Mirror DoParseMath: '$$' opens display math with a larger cap
+        LDisplay := (LPos < AText.Length) and (AText[LPos + 1] = '$');
+        if LDisplay then
+        begin
+          LStart := LPos + 2;
+          LCap := 512;
+        end
+        else
+        begin
+          LStart := LPos + 1;
+          LCap := 256;
+        end;
+
+        // Currency/false-positive guard: '$' then space or digit is
+        // literal text, not math
+        if (not LDisplay) and
+           ((LStart > AText.Length) or
+            CharInSet(AText[LStart], [' ', #9, '0'..'9'])) then
+        begin
+          LOut.Append(AText[LPos]);
+          Inc(LPos);
+          Continue;
+        end;
+
+        // Bounded scan for the matching closing delimiter
+        LEnd := 0;
+        LIdx := LStart;
+        while (LIdx <= AText.Length) and (LIdx - LStart < LCap) do
+        begin
+          if AText[LIdx] = '$' then
+          begin
+            if not LDisplay then
+            begin
+              LEnd := LIdx;
+              Break;
+            end;
+            if (LIdx < AText.Length) and (AText[LIdx + 1] = '$') then
+            begin
+              LEnd := LIdx;
+              Break;
+            end;
+          end;
+          Inc(LIdx);
+        end;
+
+        // Unclosed span -- the '$' is literal
+        if LEnd = 0 then
+        begin
+          LOut.Append(AText[LPos]);
+          Inc(LPos);
+          Continue;
+        end;
+
+        LOut.Append(DoApplyLatexSubs(
+          AText.Substring(LStart - 1, LEnd - LStart)));
+        if LDisplay then
+          LPos := LEnd + 2
+        else
+          LPos := LEnd + 1;
+      end
+      else
+      begin
+        LOut.Append(AText[LPos]);
+        Inc(LPos);
+      end;
+    end;
+
+    Result := LOut.ToString();
+  finally
+    LOut.Free();
+  end;
 end;
 
 function TConsoleAdapter.DoLatexParse(const AText: string; var APos: Integer;
