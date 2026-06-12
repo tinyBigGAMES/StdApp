@@ -76,6 +76,11 @@ const
   //==========================================================================
   // Memory Manager Constants
   //==========================================================================
+  // Block header layout (16 bytes): [0..7] NativeUInt requested size,
+  // [8] Byte class index, [12..15] UInt32 slice count (4-byte aligned).
+  // Slice count MUST be wider than a Byte: oversized blocks use 64K
+  // slices, so a Byte caps at 255 slices (~16 MB) and silently truncates
+  // larger blocks, corrupting free/realloc/reuse accounting.
   MM_HEADER_SIZE = 16;
   MM_DEFAULT_POOL_SIZE: NativeUInt = $1000000000; // 64 GB (SEC_RESERVE, no commit charge)
   MM_COMMIT_GRANULARITY = $100000; // 1 MB commit chunks
@@ -410,7 +415,7 @@ begin
     LBlock := GOversizedFreeList;
     while LBlock <> nil do
     begin
-      LFreeSlices := PByte(PByte(LBlock) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 1)^;
+      LFreeSlices := PUInt32(PByte(LBlock) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 4)^;
       if LFreeSlices >= LSliceCount then
       begin
         // Remove from oversized free list
@@ -446,7 +451,7 @@ begin
     // (user data spans across remaining slices — no intermediate headers)
     PNativeUInt(GPoolBase + LBlockStart)^ := NativeUInt(Size);
     PByte(GPoolBase + LBlockStart + SizeOf(NativeUInt))^ := Byte(LClass);
-    PByte(GPoolBase + LBlockStart + SizeOf(NativeUInt) + 1)^ := Byte(LSliceCount);
+    PUInt32(GPoolBase + LBlockStart + SizeOf(NativeUInt) + 4)^ := UInt32(LSliceCount);
 
     Result := GPoolBase + LUserStart;
     GBumpPos := LNextPos;
@@ -473,7 +478,7 @@ begin
     // Write full header — block may be a recycled multi-slice sub-block
     PNativeUInt(PByte(LBlock) - MM_HEADER_SIZE)^ := NativeUInt(Size);
     PByte(PByte(LBlock) - MM_HEADER_SIZE + SizeOf(NativeUInt))^ := Byte(LClass);
-    PByte(PByte(LBlock) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 1)^ := 1;
+    PUInt32(PByte(LBlock) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 4)^ := 1;
     Result := Pointer(LBlock);
     Exit;
   end;
@@ -492,7 +497,7 @@ begin
   // Write header: [original size][class index][slice count]
   PNativeUInt(GPoolBase + LBlockStart)^ := NativeUInt(Size);
   PByte(GPoolBase + LBlockStart + SizeOf(NativeUInt))^ := Byte(LClass);
-  PByte(GPoolBase + LBlockStart + SizeOf(NativeUInt) + 1)^ := 1;
+  PUInt32(GPoolBase + LBlockStart + SizeOf(NativeUInt) + 4)^ := 1;
 
   Result := GPoolBase + LUserStart;
   GBumpPos := LNextPos;
@@ -526,7 +531,7 @@ begin
   end;
 
   LClass := PByte(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt))^;
-  LSliceCount := PByte(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 1)^;
+  LSliceCount := PUInt32(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 4)^;
 
   if LSliceCount = 1 then
   begin
@@ -583,7 +588,7 @@ begin
   end;
 
   LOldClass := PByte(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt))^;
-  LOldSliceCount := PByte(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 1)^;
+  LOldSliceCount := PUInt32(PByte(P) - MM_HEADER_SIZE + SizeOf(NativeUInt) + 4)^;
   LOldSize := PNativeUInt(PByte(P) - MM_HEADER_SIZE)^;
   LOldCapacity := LOldSliceCount * MM_SIZES[LOldClass];
 
