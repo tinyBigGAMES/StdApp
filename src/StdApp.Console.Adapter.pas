@@ -1,7 +1,7 @@
 ﻿{===============================================================================
-  StdApp Components(TM)
+  StdApp Components™
 
-  Copyright (c) 2026-present tinyBigGAMES(TM) LLC
+  Copyright © 2026-present tinyBigGAMES™ LLC
   All Rights Reserved.
 
   See LICENSE for license information

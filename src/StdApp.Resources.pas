@@ -97,6 +97,56 @@ resourcestring
   RSVMGrowException          = 'Grow exception: %s';
 
   //--------------------------------------------------------------------------
+  // Crypto Messages
+  //--------------------------------------------------------------------------
+  RSCryFileNotFound  = 'File not found: %s';
+  RSCryFileError     = 'File error: %s';
+  RSCryRandomFailed  = 'Secure random generation failed (BCryptGenRandom)';
+  RSCryNoSecretKey   = 'No secret key present in key pair';
+  RSCryNoPublicKey   = 'No public key present in key pair';
+  RSCryBadKeyFile    = 'Invalid or unrecognized key data: %s';
+  RSCryBadSigFile    = 'Invalid signature file: %s';
+  RSCryKeyIdMismatch = 'Signature key id does not match the public key: %s';
+  RSCryVerifyFailed  = 'Signature verification FAILED for: %s';
+  RSCrySecKeyComment     = 'apppacker secret key %s';
+  RSCrySigDefaultComment = 'signature from apppacker secret key %s';
+
+  //--------------------------------------------------------------------------
+  // Packer Messages
+  //--------------------------------------------------------------------------
+  RSPakManifestNotFound = 'Manifest not found: %s';
+  RSPakParseError       = 'Manifest parse error at line %d: %s';
+  RSPakNoOutput         = 'Manifest is missing the output: key';
+  RSPakSourceMissing    = 'Source directory not found: %s';
+  RSPakSourceScan       = 'scan: %s (prefix: %s)';
+  RSPakMatched          = 'matched: %d file(s)';
+  RSPakNoFiles          = 'Nothing to pack (no files matched include/exclude rules)';
+  RSPakAdd              = 'add: %s';
+  RSPakDone             = 'done: %d file(s) -> %s';
+  RSPakChecksum         = 'checksum: %s';
+  RSPakSigned           = 'signed: %s';
+  RSPakSecKeyInArchive  = 'FATAL: the configured secret key file is matched by include rules: %s';
+  RSPakZipError         = 'Archive build failed: %s';
+  RSPakNoSecKey         = 'sign: block present but seckey: is missing';
+
+  //--------------------------------------------------------------------------
+  // AppPacker CLI Messages
+  //--------------------------------------------------------------------------
+  RSCliBanner = 'AppPacker™ %s - manifest-driven release packer';
+  RSCliUsage = 'Usage:'#13#10 +
+    '  AppPacker <manifest.yml>'#13#10 +
+    '  AppPacker pack <manifest.yml>'#13#10 +
+    '  AppPacker keygen <basepath>'#13#10 +
+    '  AppPacker verify <file> <pubkey-file-or-string>';
+  RSCliPacking       = 'packing: %s %s';
+  RSCliKeyExists     = 'REFUSED: secret key already exists, will not overwrite: %s';
+  RSCliKeygenDone    = 'keypair written: %s / %s';
+  RSCliKeyId         = 'key id: %s';
+  RSCliPubKey        = 'public key: %s';
+  RSCliKeyBackupHint = 'BACK UP the .key file now. It is NOT encrypted. Keep it OUTSIDE any repo.';
+  RSCliVerifyOk      = 'verified OK: %s';
+
+  //--------------------------------------------------------------------------
   // Your Application
   //--------------------------------------------------------------------------
   // Add your application-specific resource strings below this line.
